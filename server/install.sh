@@ -2,8 +2,8 @@
 # install.sh — VeraPOS one-command store-backend installer
 #
 # Usage:
-#   curl -s https://install.verapos.co | sudo bash
-#   STORE_ID=mi-tienda curl -s https://install.verapos.co | sudo bash
+#   curl -s https://install.verapos.co/server/install.sh | sudo bash
+#   STORE_ID=mi-tienda curl -s https://install.verapos.co/server/install.sh | sudo bash
 #
 # Env overrides (set before piping):
 #   STORE_ID      — unique store slug (default: hostname)
@@ -22,7 +22,7 @@ VERAPOS_DIR="${VERAPOS_DIR:-/opt/verapos}"
 STORE_ID="${STORE_ID:-$(hostname -s)}"
 COMPOSE_FILE="deploy/local/docker-compose.yml"
 ENV_FILE="deploy/local/.env"
-HEALTH_URL="http://localhost:4000/health"
+HEALTH_URL="http://localhost:4000/ready"
 HEALTH_TIMEOUT=135   # seconds
 HEALTH_INTERVAL=3    # seconds between polls
 LOG_FILE="/tmp/verapos-install-$(date +%Y%m%d-%H%M%S).log"
