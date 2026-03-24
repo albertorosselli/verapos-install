@@ -57,12 +57,9 @@ install_docker() {
   success "Docker installed."
 }
 
-# ── Step 2 — Docker group (no re-login needed) ────────────────────────────────
-# Adds the real user to the docker group and builds a DOCKER_RUN wrapper that
-# uses 'sg docker' so group membership is active in this session without
-# requiring the user to log out. Falls back to 'sudo docker' if sg is missing.
-DOCKER_RUN=""   # set by ensure_docker_group; used as: $DOCKER_RUN "docker ..."
-
+# ── Step 2 — Docker group ─────────────────────────────────────────────────────
+# Adds the real user to the docker group so they can run docker without sudo
+# after install. The script itself runs as root so no wrapper is needed here.
 ensure_docker_group() {
   step "Docker group"
   getent group docker &>/dev/null || groupadd docker
@@ -71,14 +68,7 @@ ensure_docker_group() {
     info "$REAL_USER is already in the docker group."
   else
     usermod -aG docker "$REAL_USER"
-    info "Added $REAL_USER to docker group (effective this session via sg)."
-  fi
-
-  # Choose runtime wrapper for this script session
-  if command -v sg &>/dev/null; then
-    DOCKER_RUN="sg docker -c"
-  else
-    DOCKER_RUN="sudo -u $REAL_USER"
+    info "Added $REAL_USER to docker group (run 'newgrp docker' after install)."
   fi
 }
 
@@ -136,30 +126,20 @@ setup_env() {
   fi
 
   # ── Interactive prompts ─────────────────────────────────────────────────────
-  # Allow env-var pre-seeding (useful for automated provisioning)
   if [[ -z "${STORE_ID_INPUT:-}" ]]; then
     echo ""
     read -rp "  Store ID (e.g. tienda-bogota): " STORE_ID_INPUT
     [[ -n "${STORE_ID_INPUT}" ]] && STORE_ID="${STORE_ID_INPUT}"
   fi
 
-  local platform_token=""
-  if [[ -z "${PLATFORM_SERVICE_TOKEN:-}" ]]; then
-    read -rp "  Platform service token (from platform.verapos.co): " platform_token
-  else
-    platform_token="${PLATFORM_SERVICE_TOKEN}"
-  fi
-
-  if [[ -z "${platform_token}" ]]; then
-    warn "No PLATFORM_SERVICE_TOKEN entered — store will not sync with the platform until it is set."
-  fi
-
   info "Generating .env …"
 
-  local pg_pass redis_pass jwt_secret
+  local pg_pass redis_pass jwt_secret platform_token
   pg_pass="$(openssl rand -hex 16)"
   redis_pass="$(openssl rand -hex 16)"
   jwt_secret="verapos-$(openssl rand -hex 16)"
+  # Use provided token or generate a new one
+  platform_token="${PLATFORM_SERVICE_TOKEN:-$(openssl rand -hex 32)}"
 
   mkdir -p "$(dirname "${env_path}")"
   cat > "${env_path}" <<EOF
@@ -207,9 +187,9 @@ start_containers() {
   # If containers from a previous install are running, rebuild cleanly
   if docker ps --format '{{.Names}}' 2>/dev/null | grep -q verapos; then
     info "Existing containers detected — rebuilding with --remove-orphans …"
-    $DOCKER_RUN "$COMPOSE -f ${dir}/docker-compose.yml up -d --build --remove-orphans"
+    $COMPOSE -f "${dir}/docker-compose.yml" up -d --build --remove-orphans
   else
-    $DOCKER_RUN "$COMPOSE -f ${dir}/docker-compose.yml up -d --build"
+    $COMPOSE -f "${dir}/docker-compose.yml" up -d --build
   fi
 
   success "Containers started."
@@ -235,7 +215,7 @@ health_check() {
   echo ""
   warn "Health check timed out after ${HEALTH_TIMEOUT}s."
   warn "Inspect logs:"
-  warn "  $DOCKER_RUN \"$COMPOSE -f ${VERAPOS_DIR}/${COMPOSE_FILE} logs backend --tail=50\""
+  warn "  $COMPOSE -f ${VERAPOS_DIR}/${COMPOSE_FILE} logs backend --tail=50"
   warn "Full install log: ${LOG_FILE}"
   exit 1
 }
@@ -268,13 +248,22 @@ main() {
   echo -e "${GREEN}${BOLD}  Installation complete!${RESET}"
   echo -e "  API     : http://${ip}:4000"
   echo -e "  Config  : ${VERAPOS_DIR}/${ENV_FILE}"
-  echo -e "  Logs    : $DOCKER_RUN \"$COMPOSE -f ${VERAPOS_DIR}/${COMPOSE_FILE} logs -f\""
+  echo -e "  Logs    : $COMPOSE -f ${VERAPOS_DIR}/${COMPOSE_FILE} logs -f"
   echo -e "  Install log: ${LOG_FILE}"
   echo -e "${GREEN}${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
   echo ""
+  local token
+  token="$(grep ^PLATFORM_SERVICE_TOKEN "${VERAPOS_DIR}/${ENV_FILE}" | cut -d= -f2)"
+
+  echo ""
+  echo -e "${YELLOW}${BOLD}  ACTION REQUIRED — sync the platform token:${RESET}"
+  echo -e "  On the cloud server, set in deploy/cloud/.env:"
+  echo -e "  ${BOLD}PLATFORM_SERVICE_TOKEN=${token}${RESET}"
+  echo ""
   info "Next steps:"
-  info "  1. Register this store's backendUrl in platform.verapos.co"
-  info "  2. Run 'newgrp docker' or re-login to use docker without sudo"
+  info "  1. Set PLATFORM_SERVICE_TOKEN on the cloud server (see above)"
+  info "  2. Register this store's backendUrl in platform.verapos.co"
+  info "  3. Run 'newgrp docker' or re-login to use docker without sudo"
 }
 
 main "$@"
