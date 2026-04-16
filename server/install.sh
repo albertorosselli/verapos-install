@@ -58,8 +58,6 @@ install_docker() {
 }
 
 # ── Step 2 — Docker group ─────────────────────────────────────────────────────
-# Adds the real user to the docker group so they can run docker without sudo
-# after install. The script itself runs as root so no wrapper is needed here.
 ensure_docker_group() {
   step "Docker group"
   getent group docker &>/dev/null || groupadd docker
@@ -73,26 +71,23 @@ ensure_docker_group() {
 }
 
 # ── Step 3 — Docker Compose ───────────────────────────────────────────────────
-COMPOSE=""   # set by find_compose_cmd
+COMPOSE=""
 
 find_compose_cmd() {
   step "Docker Compose"
 
-  # Prefer the plugin ('docker compose', ships with Engine 20.10+)
   if docker compose version &>/dev/null 2>&1; then
     COMPOSE="docker compose"
     info "Using Compose plugin: $(docker compose version --short 2>/dev/null || docker compose version)"
     return
   fi
 
-  # Fallback 1: standalone docker-compose v1 (pre-installed on Ubuntu 20.04)
   if command -v docker-compose &>/dev/null; then
     COMPOSE="docker-compose"
     warn "Compose plugin not found — using standalone docker-compose v1"
     return
   fi
 
-  # Fallback 2: try installing the plugin from apt
   if command -v apt-get &>/dev/null; then
     info "Installing docker-compose-plugin via apt …"
     apt-get install -y docker-compose-plugin &>/dev/null \
@@ -115,7 +110,24 @@ setup_repo() {
   success "Repo ready."
 }
 
-# ── Step 5 — Environment file (never overwrites) ──────────────────────────────
+# ── Step 5 — verapos CLI ──────────────────────────────────────────────────────
+install_cli() {
+  step "verapos CLI"
+  local cli_src="${VERAPOS_DIR}/deploy/scripts/verapos"
+  local cli_dst="/usr/local/bin/verapos"
+
+  if [[ ! -f "$cli_src" ]]; then
+    warn "CLI script not found at $cli_src — skipping."
+    return
+  fi
+
+  cp "$cli_src" "$cli_dst"
+  chmod 755 "$cli_dst"
+  success "Installed: verapos → $cli_dst"
+  info "Run 'sudo verapos activate' to assign a store identity."
+}
+
+# ── Step 6 — Environment file (never overwrites) ──────────────────────────────
 setup_env() {
   step "Environment"
   local env_path="${VERAPOS_DIR}/${ENV_FILE}"
@@ -125,7 +137,6 @@ setup_env() {
     return
   fi
 
-  # ── Interactive prompts ─────────────────────────────────────────────────────
   if [[ -z "${STORE_ID_INPUT:-}" ]]; then
     echo ""
     read -rp "  Store ID (e.g. tienda-bogota): " STORE_ID_INPUT
@@ -138,7 +149,6 @@ setup_env() {
   pg_pass="$(openssl rand -hex 16)"
   redis_pass="$(openssl rand -hex 16)"
   jwt_secret="verapos-$(openssl rand -hex 16)"
-  # Use provided token or generate a new one
   platform_token="${PLATFORM_SERVICE_TOKEN:-$(openssl rand -hex 32)}"
 
   mkdir -p "$(dirname "${env_path}")"
@@ -147,6 +157,7 @@ setup_env() {
 
 # ── Store identity ────────────────────────────────────────────────────────────
 STORE_ID=${STORE_ID}
+ACTIVATED=false
 
 # ── Database ──────────────────────────────────────────────────────────────────
 POSTGRES_USER=verapos_user
@@ -161,7 +172,7 @@ JWT_SECRET=${jwt_secret}
 PORT=3000
 
 # ── Cloud sync ────────────────────────────────────────────────────────────────
-CLOUD_SYNC_ENABLED=true
+CLOUD_SYNC_ENABLED=false
 CLOUD_SYNC_BASE_URL=https://api.verapos.co
 
 # ── Platform service token ────────────────────────────────────────────────────
@@ -179,12 +190,11 @@ EOF
   success ".env created at ${env_path}"
 }
 
-# ── Step 6 — Start / rebuild containers ───────────────────────────────────────
+# ── Step 7 — Start / rebuild containers ───────────────────────────────────────
 start_containers() {
   step "Containers"
   local dir="${VERAPOS_DIR}/deploy/local"
 
-  # If containers from a previous install are running, rebuild cleanly
   if docker ps --format '{{.Names}}' 2>/dev/null | grep -q verapos; then
     info "Existing containers detected — rebuilding with --remove-orphans …"
     $COMPOSE -f "${dir}/docker-compose.yml" up -d --build --remove-orphans
@@ -195,7 +205,7 @@ start_containers() {
   success "Containers started."
 }
 
-# ── Step 7 — Health check ─────────────────────────────────────────────────────
+# ── Step 8 — Health check ─────────────────────────────────────────────────────
 health_check() {
   step "Health check"
   info "Polling ${HEALTH_URL} every ${HEALTH_INTERVAL}s (timeout: ${HEALTH_TIMEOUT}s) …"
@@ -222,7 +232,6 @@ health_check() {
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 main() {
-  # Tee all output to log file for post-mortem debugging
   exec > >(tee -a "${LOG_FILE}") 2>&1
 
   echo ""
@@ -236,6 +245,7 @@ main() {
   ensure_docker_group
   find_compose_cmd
   setup_repo
+  install_cli
   setup_env
   start_containers
   health_check
@@ -262,8 +272,9 @@ main() {
   echo ""
   info "Next steps:"
   info "  1. Set PLATFORM_SERVICE_TOKEN on the cloud server (see above)"
-  info "  2. Register this store's backendUrl in platform.verapos.co"
-  info "  3. Run 'newgrp docker' or re-login to use docker without sudo"
+  info "  2. Activate this server for a store:  sudo verapos activate"
+  info "  3. Register the store's backendUrl in platform.verapos.co"
+  info "  4. If migrating from ISSIS:           sudo verapos import"
 }
 
 main "$@"
